@@ -8,21 +8,28 @@ import csv
 from dotenv import load_dotenv
 
 load_dotenv() # loads environment variables
-GOOGLE_SCRAPER_APIFY_API_KEY = os.getenv('GOOGLE_SCRAPER_APIFY_API_KEY')
 
 ### APIFY API ###
+GOOGLE_SCRAPER_APIFY_API_KEY = os.getenv('GOOGLE_SCRAPER_APIFY_API_KEY')
+GOOGLE_SCRAPER_APIFY_API_ENDPOINT = os.getenv('GOOGLE_SCRAPER_APIFY_API_ENDPOINT')
+RUN_GOOGLE_SCRAPE_REQUEST_URL = GOOGLE_SCRAPER_APIFY_API_ENDPOINT + GOOGLE_SCRAPER_APIFY_API_KEY
 
-# # Runs this actor task and waits for its finish. 
-# # Optionally, the POST payload can contain a JSON object whose fields override the actor input configuration. 
-# # The HTTP response contains the actor's dataset items, while the format of items depends on specifying dataset items' format parameter. 
-# # Beware that the HTTP connection might time out for long-running actors.
-RUN_GOOGLE_SCRAPE_REQUEST_URL = "https://api.apify.com/v2/actor-tasks/eIv7L8YPtSufwUJQd/run-sync-get-dataset-items?token=" + GOOGLE_SCRAPER_APIFY_API_KEY
+MONTHS = [
+    'JANUARY',
+    'FEBRUARY',
+    'MARCH',
+    'APRIL',
+    'MAY',
+    'JUNE',
+    'JULY',
+    'AUGUST',
+    'SEPTEMBE',
+    'OCTOBER',
+    'NOVEMBER',
+    'DECEMBER',
+]
 
-
-# Takes a URL that hits our google scraper apify API endpoint.
-# Also takes different config options for the scraper. Most important is the queries that we pass in
-# pro tip: if we don't care about knowledge panel information, setting save_html to False will likely speed up the query a bit
-# we generally want to keep max pages per query at 1 as going to subsequent pages gets slower for each page...instead if we want a lot of results we can set the results per page up as high as 100
+### SCRAPERS ###
 def run_apify_google_scraper(RUN_GOOGLE_SCRAPE_REQUEST_URL, query, json_output_file_path, results_per_page=10, max_pages_per_query=1, save_html=True):
     # json input to override default actor input configuration
     input_json = {
@@ -45,14 +52,44 @@ def run_apify_google_scraper(RUN_GOOGLE_SCRAPE_REQUEST_URL, query, json_output_f
         f.write(r.text)
 
 
-def read_json_data(file_path):
-    # Parse playlists, for each playlist write video and comment data to playlists folder
-    with open(file_path) as f:
-        search_results_dict = json.load(f)
-    return search_results_dict
+def get_titles(movies_list_file_path):
+    movies = read_csv(movies_list_file_path)
 
-# returns dictionary will all the structured data from the knowledge panels and additional queries to search
-def parse_knowledge_panels(search_results_html):
+    # just want movie titles
+    titles = []
+    for movie in movies:
+        movie_parts = movie.split(",")
+
+        # if movie part is just a month remove it
+        if any(month in movie_parts[0] for month in MONTHS):
+            movie_parts.pop(0)
+        
+        if movie_parts[0].isdigit() or movie_parts[0].strip() == "L" or movie_parts[0].strip() == "W" or movie_parts[0].strip() == "‡" or movie_parts[0].strip() == "R":
+            if movie_parts[1].strip() == "L" or movie_parts[1].strip() == "W" or movie_parts[1].strip() == "‡" or movie_parts[1].strip() == "R":
+                title = movie_parts[2]
+            else:
+                title = movie_parts[1]
+        else:
+            title = movie_parts[0]
+        
+        print("____"*80)
+        print(movie_parts)
+        print(title)
+
+        titles.append(title)
+
+    return titles
+
+def generate_google_search_queries(movie_list_file_path, year):
+    titles = get_titles(movie_list_file_path)
+    queries = [str(title).replace("/"," ") + " movie " + str(year) for title in titles]
+
+    return queries
+
+
+### PARSERS ###
+# returns dictionary will all the structured data from the knowledge panels
+def parse_knowledge_panels(search_results_html, query):
     
     #initialize empty knowledge dict
     knowledge_dict = {}
@@ -60,43 +97,78 @@ def parse_knowledge_panels(search_results_html):
     soup = BeautifulSoup(search_results_html, 'html.parser')
     # print(soup.title)
 
-    kp_whole_page_html = soup.find_all("div", class_="kp-wholepage")
-    # print(kp_whole_page_html)
+    try:
+        kp_whole_page_html = soup.find_all("div", class_="kp-wholepage")
+        # print(kp_whole_page_html)
+    except:
+        kp_whole_page_html = ""
+    
+    try:
+        # get title
+        title = soup.find_all(attrs={"data-attrid": "title"})[0].get_text()
+        # print(title)
+    except:
+        title = ""
 
-    # get title
-    title = soup.find_all(attrs={"data-attrid": "title"})[0].get_text()
-    print(title)
+    try:
+        # get subtitle
+        subtitle = soup.find_all(attrs={"data-attrid": "subtitle"})[0].get_text()
 
-    # get subtitle
-    subtitle = soup.find_all(attrs={"data-attrid": "subtitle"})[0].get_text()
-    # print(subtitle)
+        subtitle_parts = subtitle.split("‧")
+        maturity_rating = subtitle_parts[0].split()[0]
+        release_year = subtitle_parts[0].split()[1]
+        genre = subtitle_parts[1].strip()
+        duration = subtitle_parts[2].strip()
+    except:
+        subtitle = ""
+        maturity_rating = ""
+        release_year = ""
+        genre = ""
+        duration = ""
 
-    # get title link
-    title_link = soup.find_all(attrs={"data-attrid": "title_link"})[0].get("href")
-    # print(title_link)
+    # print(maturity_rating)
+    # print(release_year)
+    # print(genre)
+    # print(duration)
+
+    try:
+        # get title link
+        title_link = soup.find_all(attrs={"data-attrid": "title_link"})[0].get("href")
+        # print(title_link)
+    except:
+        title_link = ""
 
     # get film review ratings
     # "kc:/film/film:reviews"
-    film_review_ratings = soup.find_all(attrs={"data-attrid": "kc:/film/film:reviews"})[0]
-    film_review_ratings_links = film_review_ratings.find_all("a", href=True)
     IMDb_link = ""
     IMDb_rating = ""
     indie_wire_link = ""
     indie_wire_rating = ""
     rotten_tomatoes_link = ""
     rotten_tomatoes_rating = ""
+    meta_critic_link = ""
+    meta_critic_rating = ""
 
-    for link in film_review_ratings_links:
-        # print(link.get_text())
-        if "IMDb" in link.get_text():
-            IMDb_link = link["href"]
-            IMDb_rating = link.get_text().replace("IMDb","")
-        elif "IndieWire" in link.get_text():
-            indie_wire_link = link["href"]
-            indie_wire_rating = link.get_text().replace("IndieWire","")
-        elif "Rotten Tomatoes" in link.get_text():
-            rotten_tomatoes_link = link["href"]
-            rotten_tomatoes_rating = link.get_text().replace("Rotten Tomatoes","")
+    try:
+        film_review_ratings = soup.find_all(attrs={"data-attrid": "kc:/film/film:reviews"})[0]
+        film_review_ratings_links = film_review_ratings.find_all("a", href=True)
+
+        for link in film_review_ratings_links:
+            # print(link.get_text())
+            if "IMDb" in link.get_text():
+                IMDb_link = link["href"]
+                IMDb_rating = link.get_text().replace("IMDb","")
+            elif "IndieWire" in link.get_text():
+                indie_wire_link = link["href"]
+                indie_wire_rating = link.get_text().replace("IndieWire","")
+            elif "Rotten Tomatoes" in link.get_text():
+                rotten_tomatoes_link = link["href"]
+                rotten_tomatoes_rating = link.get_text().replace("Rotten Tomatoes","")
+            elif "Metacritic" in link.get_text():
+                meta_critic_link = link["href"]
+                meta_critic_rating = link.get_text().replace("Metacritic","")
+    except:
+        pass
 
     # print(IMDd_link)
     # print(IMDB_rating)
@@ -105,53 +177,114 @@ def parse_knowledge_panels(search_results_html):
     # print(indie_wire_link)
     # print(indie_wire_rating)
 
-    # get percentage of google users that liked this movie
-    # "kc:/ugc:thumbs_up"
-    p_google_likes = soup.find_all(attrs={"data-attrid": "kc:/ugc:thumbs_up"})[0].get_text().split()[0]
-    # print(p_google_likes)
+    try:
+        # get percentage of google users that liked this movie
+        # "kc:/ugc:thumbs_up"
+        p_google_likes = soup.find_all(attrs={"data-attrid": "kc:/ugc:thumbs_up"})[0].get_text().split()[0]
+        # print(p_google_likes)
+    except:
+        p_google_likes = ""
 
-    description = soup.find_all(attrs={"data-attrid": "description"})[0].span.get_text().replace("MORE", "")
-    # print(description)
+    try:
+        description = soup.find_all(attrs={"data-attrid": "description"})[0].span.get_text().replace("MORE", "")
+        # print(description)
+    except:
+        description = ""
 
-    # "hw:/collection/films:box office"
-    box_office = soup.find_all(attrs={"data-attrid": "hw:/collection/films:box office"})[0].get_text().replace("Box office:", "")
-    # print(box_office)
+    try:
+        # "hw:/collection/films:box office"
+        box_office = soup.find_all(attrs={"data-attrid": "hw:/collection/films:box office"})[0].get_text().replace("Box office:", "")
+        # print(box_office)
+    except:
+        box_office = ""
+    
+    try:
+        # "kc:/film/film:theatrical region aware release date"
+        release_date = soup.find_all(attrs={"data-attrid": "kc:/film/film:theatrical region aware release date"})[0].get_text().replace("Release date:", "")
+        # print(release_date)
+    except:
+        release_date = ""
+    
 
-    # "kc:/film/film:theatrical region aware release date"
-    release_date = soup.find_all(attrs={"data-attrid": "kc:/film/film:theatrical region aware release date"})[0].get_text().replace("Release date:", "")
-    # print(release_date)
+    try:
+        # kc:/film/film:director
+        directors = soup.find_all(attrs={"data-attrid": "kc:/film/film:director"})[0].get_text().replace("Directors: ","")
+        # print(directors)
+    except:
+        directors = ""
 
-    # "kc:/film/film:budget"
-    budget = soup.find_all(attrs={"data-attrid": "kc:/film/film:budget"})[0].get_text().replace("Budget:", "")
-    # print(budget)
+    try:
+        # "kc:/film/film:budget"
+        budget = soup.find_all(attrs={"data-attrid": "kc:/film/film:budget"})[0].get_text().replace("Budget:", "")
+        # print(budget)
+    except:
+        budget = ""
+    
+    try:
+        # kc:/award/award_winner:awards
+        awards = soup.find_all(attrs={"data-attrid": "kc:/award/award_winner:awards"})[0].get_text().replace("Awards: ", "").replace("MORE", "")
+        # print(awards)
+    except:
+        awards = ""
+
+    #### TODO:  film series, producers ####
+
+    try:
+        film_series = soup.find_all(attrs={"data-attrid": "kc:/film/film:film series"})[0].get_text().replace("Film series: ", "")
+    except:
+        film_series = ""
+
+    try:
+        producers = soup.find_all(attrs={"data-attrid": "kc:/film/film:producer"})[0].get_text().replace("Producers: ", "")
+    except:
+        producers = ""
 
 
-    # "kc:/film/film:critic_reviews"
-    critic_reviews_html = soup.find_all(attrs={"data-attrid": "kc:/film/film:critic_reviews"})[0]
-    # print(critic_reviews_html)
+    try:
+        # "kc:/film/film:critic_reviews"
+        critic_reviews_html = soup.find_all(attrs={"data-attrid": "kc:/film/film:critic_reviews"})[0]
+        # print(critic_reviews_html)
+    except:
+        critic_reviews_html = ""
 
+    try:
+        # audience reviews - includes audience rating summary
+        # kc:/ugc:user_reviews
+        audience_reviews_html = soup.find_all(attrs={"data-attrid": "kc:/ugc:user_reviews"})[0]
+        # print(audience_reviews_html)
+    except:
+        audience_reviews_html = ""
 
-    # audience reviews - includs audience rating summary
-    # kc:/ugc:user_reviews
-    audience_reviews_html = soup.find_all(attrs={"data-attrid": "kc:/ugc:user_reviews"})[0]
-    # print(audience_reviews_html)
+    
 
     # fill knowledge_dict
+    knowledge_dict["query"] = query
     knowledge_dict["title"] = title
     knowledge_dict["subtitle"] = subtitle
+    knowledge_dict["maturity_rating"] = maturity_rating
+    knowledge_dict["release_year"] = release_year
+    knowledge_dict["genre"] = genre
+    knowledge_dict["duration"] = duration
     knowledge_dict["title_link"] = title_link
     knowledge_dict["description"] = description
+
 
     knowledge_dict["IMDb_link"] = IMDb_link
     knowledge_dict["IMDb_rating"] = IMDb_rating
     knowledge_dict["rotten_tomatoes_link"] = rotten_tomatoes_link
     knowledge_dict["rotten_tomatoes_rating"] = rotten_tomatoes_rating
+    knowledge_dict["meta_critic_link"] = meta_critic_link
+    knowledge_dict["meta_critic_rating"] = meta_critic_rating
     knowledge_dict["indie_wire_link"] = indie_wire_link
     knowledge_dict["indie_wire_rating"] = indie_wire_rating
     knowledge_dict["p_google_likes"] = p_google_likes
     
     knowledge_dict["box_office"] = box_office
     knowledge_dict["release_date"] = release_date
+    knowledge_dict["directors"] = directors
+    knowledge_dict["awards"] = awards
+    knowledge_dict["film_series"] = film_series
+    knowledge_dict["producers"] = producers
     knowledge_dict["budget"] = budget
 
     knowledge_dict["critic_reviews_html"] = critic_reviews_html
@@ -161,245 +294,91 @@ def parse_knowledge_panels(search_results_html):
     return knowledge_dict
 
 
-def write_knowledge_dict_to_csv(knowledge_dict, knowledge_dict_movies_file_path):
-    # nodes
+### FILE HELPERS ###
+def read_json_data(file_path):
+    with open(file_path) as f:
+        search_results_dict = json.load(f)
+    return search_results_dict
+
+def read_csv(file_path):
+    with open(file_path) as file:
+        movies = file.readlines()
+        return movies
+
+
+
+def write_knowledge_dict_to_csv(knowledge_dict, knowledge_dict_movies_file_path, header_added=True):
     print("writing movie data")
-    print(knowledge_dict)
+
+    fieldnames = fieldnames = list(knowledge_dict.keys())
+
+
+    if not header_added:
+        with open(str(knowledge_dict_movies_file_path), 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(fieldnames)
+                header_added = True
+
     with open(str(knowledge_dict_movies_file_path), 'a+', newline='') as csvfile:
-        fieldnames = ['title','subtitle', 'title_link', 'description',
-                    'IMDb_link','IMDb_rating', 'rotten_tomatoes_link','rotten_tomatoes_rating','indie_wire_link','indie_wire_rating','p_google_likes',
-                    'box_office', 'release_date', 'budget',
-                    'critic_reviews_html', 'audience_reviews_html', 'kp_whole_page_html']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writerow({'title': knowledge_dict['title'], 'subtitle': knowledge_dict['subtitle'], 'title_link': knowledge_dict['title_link'], 'description': knowledge_dict["description"],
-                        'IMDb_link': knowledge_dict['IMDb_link'], 'IMDb_rating': knowledge_dict['IMDb_rating'],
-                        'rotten_tomatoes_link': knowledge_dict['rotten_tomatoes_link'], 'rotten_tomatoes_rating': knowledge_dict['rotten_tomatoes_rating'],
-                        'indie_wire_link': knowledge_dict['indie_wire_link'], 'indie_wire_rating': knowledge_dict['indie_wire_rating'],
-                        'p_google_likes': knowledge_dict['p_google_likes'], 'box_office': knowledge_dict['box_office'], 'release_date': knowledge_dict['release_date'], 'budget': knowledge_dict['budget'],
-                        'critic_reviews_html': knowledge_dict['critic_reviews_html'],'audience_reviews_html': knowledge_dict['audience_reviews_html'], 'kp_whole_page_html': knowledge_dict['kp_whole_page_html']})
+        writer.writerow(knowledge_dict)
 
 
 ############# Get Google JSON Results ###############
+# year_range = range(1950, 2020)
+# reversed_year_range = reversed(year_range)
 
-# query = "Avengers: Endgame"
-# json_output_file_path = "data/{}.json".format(query)
+# movies_list_file_path = "data/movie_list/movies_{}.csv".format(year)
+# queries = generate_google_search_queries(movies_list_file_path, year)
 
-# run_apify_google_scraper(RUN_GOOGLE_SCRAPE_REQUEST_URL, query, json_output_file_path, results_per_page=10, max_pages_per_query=1, save_html=True)
+# retry failed queries
+queries =  read_csv("data/failed_queries/failed_queries_2.csv")
 
+i = 1
 
-######## PARSE KNOWLEDGE PANEL ###########
-
-file_path = "data/Avengers: Endgame.json"
-knowledge_dict_movies_file_path = "data/movie_results/mixed_signals.csv"
-
-# read google serp file from data folder
-search_results_dict = read_json_data(file_path)
-
-# parse kg entities
-search_results_html = search_results_dict[0]["html"]
-knowledge_dict = parse_knowledge_panels(search_results_html)
-print(knowledge_dict)
-
-
-# write to csv
-write_knowledge_dict_to_csv(knowledge_dict, knowledge_dict_movies_file_path)
+for query in queries:
+    print("querying: " + query)
+    query = query.strip()
+    print(query)
+    # print(i)
+    # json_output_file_path = "data/serp_results/{}/{}.json".format(year,query)
+    # json_output_file_path = "data/serp_results/failed_queries/{}.json".format(query)
+    # run_apify_google_scraper(RUN_GOOGLE_SCRAPE_REQUEST_URL, query, json_output_file_path, results_per_page=10, max_pages_per_query=1, save_html=True)
 
 
+# #     ######## PARSE KNOWLEDGE PANEL ###########
 
-### OTHER DATA - not relevant rn
-
-# def parse_organic_results(data):
-#     organic_results = data["organicResults"]
-#     return organic_results
-
-# def parse_related_queries(data):
-#     related_queries = data["relatedQueries"]
-#     return related_queries
-
-# def parse_paid_results(data):
-#     paid_results = data["paidResults"]
-#     return paid_results
-
-# def parse_paid_products(data):
-#     paid_products = data["paidProducts"]
-#     return paid_products
-
-# def parse_people_also_ask(data):
-#     people_also_ask = data["peopleAlsoAsk"]
-#     return people_also_ask
+# #     file_path = "data/serp_results/{}/{}.json".format(year, query)
+    file_path = "data/serp_results/failed_queries/{}.json".format(query)
+    knowledge_dict_movies_file_path = "data/structured_movie_data/movie_data_failed_queries_1.csv"
 
 
-# #### FILE HELPERS #####
+#     # # this will fail sometimes if Apify returned a html - 503 bad gateway error
+    try:
+        # read google serp file from data folder
+        search_results_dict = read_json_data(file_path)
 
-# # read input labels, returns list of lables
-# def read_queries_from_txt(google_queries_file_path):
-#     with open(google_queries_file_path) as file:
-#         queries = file.readlines()
-#         return queries
+        # parse kg entities
+        search_results_html = search_results_dict[0]["html"]
+        knowledge_dict = parse_knowledge_panels(search_results_html, query)
+        # print(knowledge_dict)
 
-
-# def write_organic_results_to_txt(organic_results, file_path):
-#     with open(file_path, 'w') as f:
-#         for url in organic_results:
-#             f.write("%s\n" % url)
-
-# def write_new_query_to_txt(new_query, file_path):
-#     with open(file_path, 'a+') as f:
-#         f.write("%s\n" % new_query)
-
-
+        if i == 0:
+            header_added = False
+        else:
+            header_added = True
+        # write to csv
+        write_knowledge_dict_to_csv(knowledge_dict, knowledge_dict_movies_file_path, header_added)
+        # write_knowledge_dict_to_csv(knowledge_dict, knowledge_dict_movies_file_path)
+        i = i + 1
+    except:
+        print(query + " failed")
+        failed_query_path = "data/failed_queries/failed_queries_3.csv"
+        f = open(failed_query_path,'a+')
+        f.write(query + "\n")
+        f.close()
+        continue
 
     
-#     # edges
 
-#     label = knowledge_dict["label"]
-    
-#     if knowledge_dict["ceo"] != "":
-#         with open(str(knowledge_dict_edges_file_path), 'a+', newline='') as csvfile:
-#             fieldnames = ['source_name','property', 'target_name']
-#             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-#             writer.writerow({'source_name': knowledge_dict["ceo"], 'property': "employee of", 'target_name': label })
-    
-#     if len(knowledge_dict["founders"]) > 0:
-#         founders = knowledge_dict["founders"] 
-#         for founder in founders:
-#             with open(str(knowledge_dict_edges_file_path), 'a+', newline='') as csvfile:
-#                 fieldnames = ['source_name','property', 'target_name']
-#                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-#                 writer.writerow({'source_name': label, 'property': "founded by", 'target_name': founder })
-
-#     if len(knowledge_dict["products"]) > 0:
-#         products = knowledge_dict["products"] 
-#         for product in products:
-#             with open(str(knowledge_dict_edges_file_path), 'a+', newline='') as csvfile:
-#                 fieldnames = ['source_name','property', 'target_name']
-#                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-#                 writer.writerow({'source_name': product, 'property': "product of", 'target_name': label })
-
-#     if knowledge_dict["parent_organization"] != "":
-#         parent_organization = knowledge_dict["parent_organization"]
-#         with open(str(knowledge_dict_edges_file_path), 'a+', newline='') as csvfile:
-#             fieldnames = ['source_name','property', 'target_name']
-#             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-#             writer.writerow({'source_name': label, 'property': "subsidiary of", 'target_name': parent_organization })
-
-#     if len(knowledge_dict["subsidiaries"]) > 0:
-#         subsidiaries = knowledge_dict["subsidiaries"] 
-#         for subsidiary in subsidiaries:
-#             subsidiary = dequote(subsidiary)
-#             with open(str(knowledge_dict_edges_file_path), 'a+', newline='') as csvfile:
-#                 fieldnames = ['source_name','property', 'target_name']
-#                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-#                 writer.writerow({'source_name': subsidiary, 'property': "subsidiary of", 'target_name': label })
-
-    
-# def dequote(s):
-#     """
-#     If a string has single or double quotes around it, remove them.
-#     Make sure the pair of quotes match.
-#     If a matching pair of quotes is not found, return the string unchanged.
-#     """
-#     if (s[0] == s[-1]) and s.startswith(("'", '"')):
-#         return s[1:-1]
-#     return s
-
-
-# ### Google Knowledge Panel Structured Data ###
-
-# # General Company Search: Honeywell or schneider electric company
-
-# #  kc
-# # data-attrid="kc:/organization/organization:headquarters"
-# # data-attrid="kc:/organization/organization:ceo"
-
-
-# # data-attrid="kc:/business/issuer:stock quote"
-# # data-attrid="kc:/organization/organization:customer service phone"
-# # data-attrid="kc:/business/business_operation:company_products_and_refinements"
-# # data-attrid="kc:/business/issuer:sideways" # people also search for
-
-
-# # data-attrid="kc:/ugc:facts" 
-# # data-attrid="kc:/business/business_operation:founder
-# # data-attrid="kc:/organization/organization:founded"
-# # data-attrid="kc:/common/topic:social media presence"
-# # data-attrid="kc:/automotive/company:model years"
-
-
-# # hw
-# # hw:/collection/organizations:headquarters location
-# # data-attrid="hw:/collection/organizations:revenue"
-# # data-attrid="hw:/collection/organizations:subsidiaries"
-# # data-attrid="hw:/collection/organizations:coo"
-# # data-attrid="hw:/collection/organizations:type"
-# # data-attrid="hw:/collection/organizations:parent"
-
-
-# # okra
-# # data-attrid="okra/answer_panel/Competitors"
-# # data-attrid="okra/answer_panel/Mission statement"
-# # data-attrid="okra/answer_panel/Salary"
-# # data-attrid="okra/answer_panel/Core values"
-# # data-attrid="okra/answer_panel/Ipo"
-# # data-attrid="okra/answer_panel/Battery life"
-# # data-attrid="okra/answer_panel/Making"
-# # data-attrid="okra/answer_panel/History"
-# # data-attrid="okra/answer_panel/Dividend"
-# # data-attrid="okra/answer_panel/Slogan"
-# # data-attrid="okra/answer_panel/Ownership"
-# # data-attrid="okra/answer_panel/Bailout"
-# # data-attrid="okra/answer_panel/Tesla merger"
-
-
-# # ss
-# # data-attrid="ss:/webfacts:locat"
-# # data-attrid="ss:/webfacts:product_output"
-# # data-attrid="ss:/webfacts:divis"
-# # data-attrid="ss:/webfacts:number_of_locat"
-# # data-attrid="ss:/webfacts:former"
-
-# # other
-# # data-attrid="visit_official_site"
-
-# ## Knowledge Panel Links
-
-# # NOTE: Can recurse on these...
-
-# # subsidaries
-# # data-attrid="hw:/collection/organizations:subsidiaries" [DIV]
-# # <a class="fl" href="/search?sxsrf=ALeKk02mwYUTrSRic9RdNbRX-yDTWEOE5A:1609880774643&amp;q=honeywell+subsidiaries&amp;stick=H4sIAAAAAAAAAOPgE-LUz9U3MEyvMDPT0swot9JPzs_JSU0uyczP088vSk_My6xKBHGKrYpLk4ozUzITizJTixeximXk56VWlqfm5CggSwAAYf2RUVEAAAA&amp;sa=X&amp;ved=2ahUKEwjy7M-d2YXuAhUNm-AKHeJxAKUQ44YBKAMwIHoECCwQBQ"><span class="SW5pqf">MORE</span></a> # look for href in link with MORE as text
-
-# # people also search for
-# # <a class="EbH0bb" href="/search?biw=1039&amp;bih=666&amp;sxsrf=ALeKk01OFLRdMMJzJeVazJ7hPezZSsiW1Q:1609883281552&amp;q=Honeywell&amp;stick=H4sIAAAAAAAAAONgFuLUz9U3MEyvMDNTQjC1ZLKTrfSTSosz81KLi_Uzi4tLU4usijNTUssTK4sXsXJ65OelVpan5uTsYGUEAEKND8xFAAAA&amp;sa=X&amp;ved=2ahUKEwi2rYHJ4oXuAhUESN8KHfM6C6IQzTooATAregQIJBAC"><span class="rhsg3">View 15+ more</span></a>
-
-
-# # Product search: Honeywell Products
-# # Maybe we want to scrape google shopping?
-
-# # Knowledge Panel (People)
-
-# # data-attrid="kc:/people/person:born"
-# # data-attrid="kc:/people/person:spouse"
-# # data-attrid="kc:/people/person:parents"
-# # data-attrid="hw:/collection/organization_founders:founded organization"
-# # data-attrid="kc:/people/person:education"
-
-
-
-# # data-attrid="kc:/book/author:books only"
-# # data-attrid="ss:/webfacts:net_worth"
-# # data-attrid="kc:/people/person:children"
-# # data-attrid="kc:/people/person:movies"
-# # data-attrid="kc:/people/deceased_person:died"
-# # data-attrid="kc:/people/person:quote"
-
-# # Knowledge Panel (Products)
-
-
-# ## alot of extensions here
-
-
-
-# #######################
-# ### QUERY GENERATOR ###
-# #######################
+   
