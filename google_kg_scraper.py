@@ -1,4 +1,12 @@
-# pyenv activate google-kg-utility-3.6.5 
+###########################################
+# Used to scrape Google Knowledge Panel Movie Data
+# https://en.wikipedia.org/wiki/Lists_of_American_films
+#
+# This script primary does two things: (TODO: modularize this a bit better and break into separate files)
+# 1. It constructs a Google Search query for a given movie and then calls the Apify Google Scraper API to get the Search Engine Request Page (SERP) for that query
+# 2. It identifies and parses the knowledge panel data for a Google SERP and writes that to a csv.
+###########################################
+
 from bs4 import BeautifulSoup
 import json
 import requests
@@ -29,7 +37,7 @@ MONTHS = [
     'DECEMBER',
 ]
 
-### SCRAPERS ###
+### Google Scraping ###
 def run_apify_google_scraper(RUN_GOOGLE_SCRAPE_REQUEST_URL, query, json_output_file_path, results_per_page=10, max_pages_per_query=1, save_html=True):
     # json input to override default actor input configuration
     input_json = {
@@ -51,7 +59,9 @@ def run_apify_google_scraper(RUN_GOOGLE_SCRAPE_REQUEST_URL, query, json_output_f
     with open(json_output_file_path,'w') as f:
         f.write(r.text)
 
-
+# takes the csv generated from the wikipedia films list and tries to extract the titles
+# this is a little tricky because the tables don't have a consistent format from year to year.
+# returns a list of movie titles 
 def get_titles(movies_list_file_path):
     movies = read_csv(movies_list_file_path)
 
@@ -80,6 +90,7 @@ def get_titles(movies_list_file_path):
 
     return titles
 
+# outputs a list of Google search queries to locate the correct movie (format: <movie_title> + 'movie' + <year>)
 def generate_google_search_queries(movie_list_file_path, year):
     titles = get_titles(movie_list_file_path)
     queries = [str(title).replace("/"," ") + " movie " + str(year) for title in titles]
@@ -88,7 +99,7 @@ def generate_google_search_queries(movie_list_file_path, year):
 
 
 ### PARSERS ###
-# returns dictionary will all the structured data from the knowledge panels
+# returns dictionary will relevant structured data from the knowledge panels
 def parse_knowledge_panels(search_results_html, query):
     
     #initialize empty knowledge dict
@@ -305,8 +316,6 @@ def read_csv(file_path):
         movies = file.readlines()
         return movies
 
-
-
 def write_knowledge_dict_to_csv(knowledge_dict, knowledge_dict_movies_file_path, header_added=True):
     print("writing movie data")
 
@@ -324,36 +333,54 @@ def write_knowledge_dict_to_csv(knowledge_dict, knowledge_dict_movies_file_path,
         writer.writerow(knowledge_dict)
 
 
+######################################################
+### Main Script To Scrape Google Knowledge Panels  ###
+######################################################
+
+###
+# Part 1. 
+# - construct a Google Search query for a given movie
+# - then call the Apify Google Scraper API to get the Search Engine Request Page (SERP) for that query
+# - one the SERP pages are written to json files, can comment the line that calls Apify to run part two
+###
+
 ############# Get Google JSON Results ###############
-# year_range = range(1950, 2020)
-# reversed_year_range = reversed(year_range)
+year = 2020 
+movies_list_file_path = "data/movie_list/movies_{}.csv".format(year) # read in list of movies from wikipedia
+queries = generate_google_search_queries(movies_list_file_path, year) # generate list of google search queries to run
 
-# movies_list_file_path = "data/movie_list/movies_{}.csv".format(year)
-# queries = generate_google_search_queries(movies_list_file_path, year)
+# if retying queries that failed in the pass
+# queries =  read_csv("data/failed_queries/failed_queries.csv")
 
-# retry failed queries
-queries =  read_csv("data/failed_queries/failed_queries_2.csv")
-
-i = 1
+i = 0
 
 for query in queries:
     print("querying: " + query)
     query = query.strip()
     print(query)
     # print(i)
-    # json_output_file_path = "data/serp_results/{}/{}.json".format(year,query)
-    # json_output_file_path = "data/serp_results/failed_queries/{}.json".format(query)
-    # run_apify_google_scraper(RUN_GOOGLE_SCRAPE_REQUEST_URL, query, json_output_file_path, results_per_page=10, max_pages_per_query=1, save_html=True)
+    json_output_file_path = "data/serp_results/{}/{}.json".format(year,query) # where json serp data gets written
+    # json_output_file_path = "data/serp_results/failed_queries/{}.json".format(query) # if retrying failed queries
+
+    run_apify_google_scraper(RUN_GOOGLE_SCRAPE_REQUEST_URL, query, json_output_file_path, results_per_page=10, max_pages_per_query=1, save_html=True) # calls the Apify Google Scraper
+
+    ###
+    # Part 2. 
+    # - parse Google SERP pages for the structured knowledge panel movie data
+    # - if the Google SERP page didn't return a knowledge panel, write query to failed queries to try again later
+    ###
+
+    # #     ######## PARSE KNOWLEDGE PANEL ###########
+
+    file_path = "data/serp_results/{}/{}.json".format(year, query)
+    knowledge_dict_movies_file_path = "data/structured_movie_data/movie_data_{}".format(year)
+
+    # if parsing failed queries
+    # file_path = "data/serp_results/failed_queries/{}.json".format(query)
+    # knowledge_dict_movies_file_path = "data/structured_movie_data/movie_data_failed_queries.csv"
 
 
-# #     ######## PARSE KNOWLEDGE PANEL ###########
-
-# #     file_path = "data/serp_results/{}/{}.json".format(year, query)
-    file_path = "data/serp_results/failed_queries/{}.json".format(query)
-    knowledge_dict_movies_file_path = "data/structured_movie_data/movie_data_failed_queries_1.csv"
-
-
-#     # # this will fail sometimes if Apify returned a html - 503 bad gateway error
+    # # this will fail sometimes if Apify returned a html - 503 bad gateway error
     try:
         # read google serp file from data folder
         search_results_dict = read_json_data(file_path)
@@ -367,13 +394,15 @@ for query in queries:
             header_added = False
         else:
             header_added = True
+        
         # write to csv
         write_knowledge_dict_to_csv(knowledge_dict, knowledge_dict_movies_file_path, header_added)
         # write_knowledge_dict_to_csv(knowledge_dict, knowledge_dict_movies_file_path)
         i = i + 1
     except:
+        # if the google serp page didn't return the actual SERP page, write to failed queries to be run later.
         print(query + " failed")
-        failed_query_path = "data/failed_queries/failed_queries_3.csv"
+        failed_query_path = "data/failed_queries/failed_queries.csv"
         f = open(failed_query_path,'a+')
         f.write(query + "\n")
         f.close()
