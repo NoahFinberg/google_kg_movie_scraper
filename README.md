@@ -12,5 +12,5 @@ We use the dataset to estimate the correlation between [average reviews across d
 ### Future
 - It'd be nice (and not super difficult) to generalize this code to be able to automatically parse any google knowledge panel beyond movies for all of the structured data.
 
-### Authors 
-Noah Finberg and Gaurav Sood
+### Author 
+Noah Finberg
